@@ -1,3 +1,0 @@
-[submodule "models/expansionnet_v2"]
-    path = models/expansionnet_v2
-    url = https://github.com/jchenghu/ExpansionNet_v2.git
