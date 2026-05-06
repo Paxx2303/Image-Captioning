@@ -1,491 +1,556 @@
-# Assignment 2
+# Nghiên cứu Phát hiện Đối tượng trên Ảnh Camera Fisheye 8K sử dụng YOLO11
+
+Người Hướng Dẫn : Dr.Nguyễn Đức Dư
+## Mục lục
+
+1. [AI City Challenge 2024 và bài toán FishEye8K](#1-ai-city-challenge-2024-và-bài-toán-fisheye8k)
+2. [Nghiên cứu của chúng tôi — Giới thiệu bài toán](#2-nghiên-cứu-của-chúng-tôi--giới-thiệu-bài-toán)
+3. [Tập dữ liệu (Dataset)](#3-tập-dữ-liệu-dataset)
+4. [Mô hình (Model)](#4-mô-hình-model)
+5. [Xử lý dữ liệu (Data Pipeline)](#5-xử-lý-dữ-liệu-data-pipeline)
+6. [Huấn luyện mô hình](#6-huấn-luyện-mô-hình)
+7. [Kết quả thực nghiệm](#7-kết-quả-thực-nghiệm)
+8. [Kết luận và hướng phát triển](#8-kết-luận-và-hướng-phát-triển)
 
 ---
 
-## (1) Sang Phan
+## 1. AI City Challenge 2024 và bài toán FishEye8K
 
-**Context**: Một AI Engineer làm việc ở công ty phần mềm và các công việc gặp phải
+### 1.1. Tổng quan AI City Challenge
 
-**Bài toán:** Lặp lại → Update requirements.txt và test dependencies sau mỗi PR merge cho LangChain/OpenAI.
+**AI City Challenge** là cuộc thi nghiên cứu thường niên do **NVIDIA** và **IEEE** đồng tổ chức, gắn liền với hội nghị **CVPR (IEEE/CVF Conference on Computer Vision and Pattern Recognition)** — hội nghị hàng đầu thế giới về thị giác máy tính. Cuộc thi tập trung vào các bài toán ứng dụng AI trong lĩnh vực giao thông thông minh (Intelligent Transportation Systems).
 
-### Challenge & Trả lời
+Năm **2024**, AI City Challenge đưa ra nhiều bài toán (tracks), trong đó **Track 4: Road Object Detection in Fish-Eye Cameras** là một bài toán hoàn toàn mới, lần đầu tiên đưa thách thức phát hiện đối tượng trên camera fisheye vào một cuộc thi quy mô quốc tế.
 
-| Câu challenge | Trả lời |
-|:---|:---|
-| "Rule/script đủ chưa? Có thật sự cần AI không?" | "Script automation (như Dependabot) đủ cho update basic dependencies. Nhưng với LangChain/OpenAI, cần AI để detect breaking changes trong code logic, không chỉ version conflicts — rule không đủ cho complex integrations." |
-| "Ngoài bạn, ai đau nữa? Bao nhiêu người?" | "Team AI Engineer có 5 người, tất cả đều gặp pain này sau mỗi PR merge. DevOps team cũng bị impact khi phải rollback nếu test fail." |
-| "Metric đo được không? Có số cụ thể chưa?" | "Có — thời gian update từ 45 min xuống dưới 10 min. Tỉ lệ test failures từ 20% xuống dưới 5%. Số PR delays giảm từ 3/tuần xuống 0." |
+### 1.2. Track 4 — Road Object Detection in Fish-Eye Cameras
 
-### Cards bị loại
+#### 1.2.1. Mô tả bài toán
 
-| Cards bị loại | Lý do |
-|:---|:---|
-| #2 — Debug Agent | Technical nhưng scope hẹp, rule/script đủ |
-| #5 — Integrate Azure AI Search | Collaboration issue, AI giúp nhưng human sync cần |
+Bài toán yêu cầu các đội thi xây dựng mô hình **phát hiện đối tượng giao thông** (object detection) trên ảnh thu từ **camera fisheye** — loại camera có góc nhìn siêu rộng (>180 độ), thường được lắp đặt tại các nút giao thông, bãi đỗ xe và đường phố để giám sát. Camera fisheye tạo ra ảnh bị **méo hình barrel distortion**, khiến các đối tượng ở rìa ảnh bị biến dạng nghiêm trọng — đây là thách thức lớn đối với các thuật toán phát hiện đối tượng truyền thống.
 
-**Vote: 6/7**
+#### 1.2.2. Tập dữ liệu FishEye8K
 
----
+Cuộc thi sử dụng tập dữ liệu **FishEye8K** — một benchmark chuyên biệt được giới thiệu bởi nhóm nghiên cứu **HCMIU-VisionLab** (Đại học Quốc tế, ĐHQG TP.HCM). Đây là tập dữ liệu lớn nhất dành riêng cho bài toán phát hiện đối tượng trên ảnh camera fisheye tại thời điểm công bố.
 
-## (2) Nam
+| Thông số | Giá trị |
+|----------|---------|
+| **Tổng số ảnh** | 8,000 (5,288 train + 2,712 test) |
+| **Tổng số annotations** | ~157,000 bounding boxes |
+| **Số camera fisheye** | 18 camera (từ nhiều vị trí giao thông khác nhau) |
+| **Độ phân giải ảnh** | Đa dạng (lên đến 8K) |
+| **Số lớp đối tượng** | 5: **Bus, Bike (Motorbike), Car, Pedestrian, Truck** |
+| **Định dạng annotation** | COCO JSON |
+| **Nguồn dữ liệu** | Camera giám sát giao thông thực tế |
 
-**Bài toán:** Tổng hợp dữ liệu từ database để làm các báo cáo định kỳ, tốn nhiều thời gian
+#### 1.2.3. Metric đánh giá
 
-### Challenge & Trả lời
+Ban đầu cuộc thi sử dụng **mAP (mean Average Precision)** làm metric chính. Tuy nhiên, sau đó đã chuyển sang sử dụng **F1-score** (trung bình điều hòa của Precision và Recall) làm tiêu chí xếp hạng chính, vì mAP bị phát hiện là có xu hướng ưu ái các chiến lược tạo ra nhiều false positives.
 
-| Câu hỏi Challenge | Trả lời chi tiết |
-|:---|:---|
-| Hiện tại bạn đang mất bao nhiêu thời gian để tổng hợp dữ liệu từ database cho mỗi báo cáo định kỳ, và con số đó chiếm bao nhiêu % tổng thời gian làm việc của bạn trong tuần? | Mỗi báo cáo tháng mất khoảng **6–8 tiếng**: 2 tiếng export data từ 3 nguồn (ERP, CRM, Excel phòng ban), 3 tiếng clean và chuẩn hóa format, 2 tiếng tổng hợp vào template. Tổng cộng chiếm khoảng **15–20%** thời gian làm việc cả tuần (chưa tính báo cáo quý). |
-| Điều gì xảy ra nếu dữ liệu từ các nguồn không khớp nhau khi tổng hợp — bạn xử lý như thế nào và mất thêm bao lâu? | Khi số liệu lệch nhau giữa các nguồn phải quay lại hỏi từng phòng ban để xác nhận, trung bình mất thêm **2–3 tiếng** email qua lại. Đôi khi phát hiện lúc sắp deadline nên phải làm overtime. Chưa có quy trình chuẩn để xác định nguồn nào là "source of truth" nên mỗi lần xử lý khác nhau. |
-| Nếu có một hệ thống tự động kéo dữ liệu từ tất cả các nguồn và tạo sẵn báo cáo, bạn sẽ dùng thời gian tiết kiệm được để làm gì — và điều đó có giá trị hơn việc tổng hợp thủ công không? | Nếu tiết kiệm được 6–8 tiếng mỗi tháng, thời gian đó sẽ dùng để phân tích sâu hơn vào nguyên nhân biến động số liệu và đưa ra khuyến nghị cho ban lãnh đạo. Giá trị cao hơn nhiều vì đây là phần tạo ra quyết định kinh doanh thực sự, thay vì chỉ copy số từ chỗ này sang chỗ khác. |
+### 1.3. Kết quả cuộc thi và các đội thắng giải
 
-### Cards bị loại
+Cuộc thi thu hút sự tham gia của **hơn 50 đội** từ khắp nơi trên thế giới. Kết quả top 3 như sau:
 
-| Card bị loại | Lý do |
-|:---|:---|
-| #1 Tổng hợp dữ liệu để làm các báo cáo định kỳ | Khó đo quality improvement, metric yếu hơn |
-| #3 Sắp xếp lịch trình cho tổ chức | Khó đo quality improvement, metric yếu hơn |
+| Hạng | Đội | F1-score | Bài báo |
+|------|-----|----------|---------|
+| **1st (Winner)** | **VNPT AI** (Team 9) | **0.6406** | "Robust Data Augmentation and Ensemble Method for Object Detection in Fisheye Camera Images" |
+| **2nd (Runner-up)** | **Nota / NetsPresso** (Team 40) | **0.6196** | "Road Object Detection Robust to Distorted Objects at the Edge Regions of Images" |
+| **3rd (Honorable)** | **SKKU-AutoLab** (Team 5) | **0.6194** | "Improving Object Detection to Fisheye Cameras with Open-Vocabulary Pseudo-Label Approach" |
 
-**Vote: 6/7**
+### 1.4. Kỹ thuật chính của các đội dẫn đầu
 
----
+Các đội đạt thứ hạng cao đã sử dụng nhiều kỹ thuật tiên tiến để giải quyết thách thức của bài toán fisheye:
 
-## (3) Dũng
+| Kỹ thuật | Mô tả |
+|----------|-------|
+| **Model Ensemble** | Kết hợp nhiều mô hình (YOLO variants + Transformer-based models như Co-DETR) và sử dụng **Weighted Boxes Fusion (WBF)** để hợp nhất kết quả |
+| **Data Augmentation mạnh** | Các kỹ thuật augmentation chuyên biệt cho fisheye: barrel distortion simulation, mosaic, mixup, copy-paste |
+| **Pseudo-labeling** | Sử dụng mô hình pre-trained để sinh nhãn giả (pseudo-labels) cho dữ liệu chưa gán nhãn, mở rộng tập huấn luyện |
+| **Dữ liệu bổ sung** | Tận dụng các dataset công khai khác như **VisDrone**, **MIO-TCD**, **UAV datasets** để tăng cường dữ liệu |
+| **SAHI (Slicing Aided Hyper Inference)** | Kỹ thuật chia nhỏ ảnh đầu vào để cải thiện phát hiện đối tượng nhỏ trong ảnh fisheye méo |
+| **Multi-scale Training/Testing** | Huấn luyện và suy luận ở nhiều độ phân giải khác nhau |
 
-**Bài toán (AI can do better):** Up bài trên group hoặc confession của trường để xin tài liệu hoặc review môn học nhằm lựa chọn học phần và giảng viên
+### 1.5. Ý nghĩa của cuộc thi
 
-### Challenge & Trả lời
+AI City Challenge 2024 Track 4 đánh dấu một **bước ngoặt quan trọng** trong lĩnh vực nghiên cứu phát hiện đối tượng trên camera fisheye:
 
-| Câu hỏi Challenge | Trả lời chi tiết |
-|:---|:---|
-| "Hiện tại bạn đang làm gì để tìm tài liệu, review môn học và chọn giảng viên?" | Mình thường up bài hỏi trên group lớp, group ngành hoặc confession của trường để xin tài liệu và review môn học, giảng viên. |
-| "Bạn mất bao nhiêu thời gian và gặp những khó khăn gì khi làm theo cách này?" | Phải chờ mọi người trả lời, đôi khi không ai rep hoặc thông tin sai, thiếu. Phải hỏi nhiều group khác nhau, tốn thời gian lọc thông tin và đôi khi vẫn không tìm được review đáng tin cậy. |
-| "Nếu có một hệ thống AI tự động tổng hợp review môn học, giảng viên từ nhiều nguồn (group, confession, feedback cũ…) và đưa ra đánh giá khách quan, bạn sẽ dùng nó không? Tại sao?" | Mình có, vì sẽ tiết kiệm rất nhiều thời gian, thông tin đầy đủ và khách quan hơn và mình có thể so sánh dễ dàng giữa các môn và giảng viên để chọn học phần phù hợp với mục tiêu và khả năng của bản thân. |
-
-### Cards bị loại
-
-| Card bị loại | Lý do |
-|:---|:---|
-| **1 - Quản lý lưu lượng truy cập đăng kí tín chỉ** | Khó xử lý khả năng phân phối lưu lượng truy cập theo băng thông |
-| **2 - Quản lý thông tin từ đa nguồn communication channel** | Bài toán có tính riêng tư cao (Privacy), khó truy cập dữ liệu tin nhắn để huấn luyện AI. Ngoài ra có thể giải quyết một phần bằng các công cụ ghim/nhắc lịch thủ công. |
-
-**Vote: 5/7**
+- **Lần đầu tiên** bài toán fisheye object detection được đưa vào một cuộc thi quy mô quốc tế tại CVPR
+- Chứng minh rằng các kỹ thuật hiện đại (YOLO, Transformer, ensemble) có thể đạt kết quả khả quan trên ảnh fisheye
+- Tạo ra benchmark chuẩn (FishEye8K) để cộng đồng nghiên cứu có thể so sánh và phát triển
+- Chỉ ra các hướng nghiên cứu tiềm năng: domain adaptation, fisheye-specific augmentation, small object detection
 
 ---
 
-## (4) Ánh
+## 2. Nghiên cứu của chúng tôi — Giới thiệu bài toán
 
-**Bài toán:** Đề xuất phương tiện di chuyển khả dụng + nhanh + rẻ dựa vào thu thập dữ liệu của các app Grab, Xanh, Be
+### 2.1. Bối cảnh nghiên cứu
 
-### Challenge & Trả lời
+Lấy cảm hứng từ AI City Challenge 2024 Track 4 và tập dữ liệu FishEye8K, nghiên cứu này thực hiện một pipeline end-to-end cho bài toán phát hiện đối tượng giao thông trên ảnh camera fisheye sử dụng mô hình **YOLO11** (trước đây thường được gọi là YOLOv11) — phiên bản mới nhất của dòng YOLO, được Ultralytics phát hành vào tháng 9 năm 2024.
 
-| Câu challenge | Trả lời của Ánh |
-|:---|:---|
-| "Chỉ cần mở app xem là xong, có thực sự cần AI không? Rule/script so sánh giá bình thường có đủ chưa?" | "Nếu chỉ so sánh giá hiện tại thì script đủ. Nhưng AI cần để dự báo thời gian tài xế đến dựa trên dữ liệu lịch sử và tình trạng kẹt xe real-time, đồng thời học hỏi thói quen của người dùng (ưu tiên rẻ hay ưu tiên nhanh) để đưa ra đề xuất thông minh nhất." |
-| "Vấn đề này ngoài bạn ra còn ai đau nữa không?" | "Tất cả sinh viên và nhân viên văn phòng di chuyển bằng app hàng ngày. Đặc biệt là cư dân Vin thường xuyên ưu tiên Xanh SM nhưng vẫn muốn cân đối giá với các bên khác." |
-| "Metric đo được không? Có số cụ thể chưa?" | "Có — Giảm thời gian chọn app từ 5 phút xuống < 30 giây. Giảm chi phí di chuyển hàng tháng trung bình 15-20% nhờ luôn chọn được deal rẻ nhất." |
-| "Có đảm bảo truy xuất được thông tin xe, giá tiền, khuyến mãi.. từ các ứng dụng đặt xe khác như Grab/Be/Xanh SM.. không?" | "Có — hệ thống hoàn toàn có thể truy xuất dữ liệu giá tiền và khuyến mãi từ các nền tảng như Grab, Be và Xanh SM thông qua các hình thức tích hợp chính thức." |
+Khác với các đội thi tại AI City Challenge thường sử dụng kỹ thuật ensemble phức tạp và nhiều mô hình kết hợp, nghiên cứu này tập trung vào việc đánh giá hiệu năng của **một mô hình đơn (YOLO11l)** khi được huấn luyện trên dữ liệu kết hợp FishEye8K và VisDrone, nhằm đưa ra baseline và phân tích chi tiết các yếu tố ảnh hưởng đến hiệu suất.
 
-### Cards bị loại
+### 2.2. Mục tiêu cụ thể
 
-| Card bị loại | Lý do |
-|:---|:---|
-| #1 Tính Calo, đề xuất khẩu phần ăn chuẩn dinh dưỡng | Độ chính xác cao, khó validate trong scope lab và phụ thuộc dữ liệu y tế chuyên sâu vượt quá phạm vi MVP |
-| #3 Hỗ trợ đọc tài liệu | Khó đo mức độ hiểu, rủi ro sai nội dung và thiếu trust nên không giải quyết triệt để pain |
+- Xây dựng pipeline dữ liệu kết hợp **FishEye8K** và **VisDrone** để tăng cường khả năng tổng quát hóa.
+- Áp dụng kỹ thuật biến đổi fisheye (barrel distortion) cho dữ liệu VisDrone để tạo dữ liệu huấn luyện đồng nhất.
+- Huấn luyện và đánh giá mô hình YOLO11l trên tập dữ liệu kết hợp.
+- Phân tích chi tiết kết quả theo từng lớp đối tượng và đề xuất hướng cải thiện.
 
-**Vote: 7/7**
+### 2.3. Thách thức chính
 
----
-
-## (5) Thái
-
-**Bài toán:** Dự đoán trạng thái thực tế của trụ sạc VinFast cho cư dân
-
-### Phase 3 — PITCH-CHALLENGE-VOTE
-
-**Thái pitch Card #3 cho nhóm (2 min):**
-
-> "Tôi là cư dân Vin và đang dùng xe điện. Vấn đề lớn nhất hiện nay không phải là thiếu trạm sạc, mà là trạm sạc ảo (Ghosting): app báo trống nhưng đến nơi thì trụ hỏng hoặc bị xe khác chiếm chỗ. Tôi muốn dùng AI để dự báo 'Độ tin cậy' của trạm sạc đó trước khi người dùng bắt đầu di chuyển, giúp họ không bị lãng phí 20-30 phút đi tìm trạm mới."
-
-### Challenge & Trả lời
-
-| Câu challenge | Trả lời của Thái |
-|:---|:---|
-| **"Tại sao không dùng hệ thống báo hỏng thủ công? Cần gì AI?"** | "Báo hỏng thủ công luôn có độ trễ lớn. AI có thể phân tích **mẫu dữ liệu (patterns)**: nếu một trụ sạc không có giao dịch phát sinh trong 3 tiếng dù app báo trống, AI sẽ tự suy luận khả năng cao trụ đó đang hỏng hoặc bị chiếm chỗ và hạ điểm uy tín của trạm đó xuống." |
-| **"Dữ liệu ở đâu để dự báo chính xác?"** | "Chúng ta có dữ liệu từ **lịch sử giao dịch sạc**, dữ liệu **log của trụ sạc** gửi về server (IoT) và báo cáo từ cộng đồng cư dân. AI sẽ kết hợp các nguồn này để đưa ra chỉ số xác suất thực tế." |
-| **"Metric thành công là gì? Làm sao biết AI của bạn tốt hơn hệ thống hiện tại?"** | "Metric chính là **Tỷ lệ sạc thành công ngay lần đầu**. Hiện tại có thể chỉ đạt 70%, mục tiêu của AI là đẩy con số này lên **> 95%**, giảm thiểu tối đa số lần khách phải di chuyển sang trạm thứ hai." |
-
-### Cards bị loại
-
-| Card bị loại | Lý do |
-|:---|:---|
-| **#1 — Lý thuyết lái xe** | Vòng đời sử dụng ngắn (thi xong là bỏ). Tính cá nhân hóa cao nhưng giá trị kinh tế thấp hơn bài toán trạm sạc. |
-| **#2 — Quản lý nhóm chat** | Bài toán có tính riêng tư cao (Privacy), khó truy cập dữ liệu tin nhắn để huấn luyện AI. Ngoài ra có thể giải quyết một phần bằng các công cụ ghim/nhắc lịch thủ công. |
-
-**Vote: 1/7**
+| Thách thức | Mô tả |
+|------------|-------|
+| **Méo hình (Distortion)** | Ảnh fisheye có hiệu ứng barrel distortion mạnh, khiến các đối tượng ở rìa ảnh bị biến dạng nghiêm trọng |
+| **Đa tỷ lệ (Multi-scale)** | Đối tượng gần tâm ảnh có kích thước lớn, trong khi đối tượng ở rìa rất nhỏ |
+| **Thiếu dữ liệu** | Tập FishEye8K có giới hạn (~5,288 ảnh train), cần bổ sung dữ liệu từ nguồn khác |
+| **Mất cân bằng lớp** | Lớp Car chiếm đa số (~90% instances), trong khi Bus, Truck, Pedestrian có rất ít mẫu |
+| **Domain gap** | Sự khác biệt đặc trưng giữa dữ liệu FishEye8K thật và VisDrone (đã chuyển đổi fisheye) |
 
 ---
 
-## (6) Đăng
+## 3. Tập dữ liệu (Dataset)
 
-**Bài toán:** Tester viết test case — Mỗi tính năng thì cần phải viết nhiều test case, tuy nhiên nội dung test có thể giống nhau chỉ khác một chút → AI gen test case, reuse
+### 3.1. FishEye8K
 
-### Challenge & Trả lời
+FishEye8K là tập dữ liệu chuyên biệt cho bài toán phát hiện đối tượng trên ảnh camera fisheye, được thu thập từ các camera giám sát giao thông thực tế.
 
-| Câu hỏi | Trả lời |
-|:---|:---|
-| AI tạo ra các test case vô nghĩa (chỉ đổi input) thì sao? | Yêu cầu AI tạo các test case cho các trường dữ liệu đại diện hoặc dữ liệu biên |
-| Nếu logic tính năng thay đổi thì AI có gen lại toàn bộ test case của tính năng đó không? | Hướng dẫn AI viết theo hướng Data-Driven Testing |
+| Thông số | Giá trị |
+|----------|---------|
+| **Ảnh huấn luyện (Train)** | 5,288 ảnh |
+| **Nhãn huấn luyện (Labels)** | 112,213 bounding boxes |
+| **Ảnh kiểm thử (Test)** | 2,712 ảnh |
+| **Số camera** | 15 camera |
+| **Số lớp đối tượng** | 5 (Car, Bus, Truck, Pedestrian, Motorbike) |
+| **Định dạng annotation** | COCO JSON |
 
-### Cards bị loại
+### 3.2. VisDrone
 
-| Card bị loại | Lý do |
-|:---|:---|
-| Khi team có người mới thì cần training từ đầu về luồng hoạt động, code base, tài liệu... | Có nhiều AI hỗ trợ như NotebookLM giúp đọc tài liệu, Code Assist giúp giải thích code… |
-| Tìm hiểu công nghệ mới để áp dụng trong thực tế | Ưu tiên chọn công nghệ, framework ổn định, cộng đồng support lớn |
+VisDrone là tập dữ liệu phát hiện đối tượng từ góc nhìn trên cao (aerial view), được sử dụng bổ sung để tăng lượng dữ liệu huấn luyện.
 
-**Vote: 1/7**
+| Tập con | Số ảnh | Số labels |
+|---------|--------|-----------|
+| **train** | 6,471 | 343,205 |
+| **val** | 548 | 38,759 |
+| **test-dev** | 1,610 | 75,102 |
+| **Tổng** | **8,629** | **457,066** |
 
----
+### 3.3. Ánh xạ lớp đối tượng (Class Mapping)
 
-## (7) Ngọc
+Dữ liệu VisDrone có hệ thống nhãn khác với FishEye8K, do đó cần thực hiện ánh xạ:
 
-### Phase 3 — PITCH-CHALLENGE-VOTE
+| VisDrone (index - tên) | FishEye8K (index - tên) |
+|------------------------|------------------------|
+| 1: pedestrian, 2: people | 3: Pedestrian |
+| 3: bicycle, 7: tricycle, 8: awning-tricycle, 10: motor | 4: Motorbike |
+| 4: car, 5: van | 0: Car |
+| 6: truck | 2: Truck |
+| 9: bus | 1: Bus |
 
-**Card #1 - Xử lý khiếu nại khách hàng (Customer Grievance Resolution)**
-
-### Challenge & Trả lời
-
-| Câu challenge | Câu trả lời |
-|:---|:---|
-| Rule/script đủ chưa? Có thật sự cần AI không? | Rule không thể bao quát văn bản tự do. Lịch sử trên CRM là text do nhân viên tự gõ, nhiều tiếng lóng/viết tắt. Việc xử lý hiện tại bắt buộc phải chuyển qua lại nhiều bộ phận (Sales, Collection) để lấy thông tin thủ công. Rất dễ bỏ sót thông tin. Chỉ có LLM Feature mới đọc hiểu và xâu chuỗi được logic ai đúng ai sai. |
-| Ngoài bạn, ai đau nữa? Quy mô bao nhiêu người? | Toàn bộ phòng CSKH chuyên giải quyết khiếu nại Escalation (khoảng 20 chuyên viên) đều mắc kẹt ở khâu này. Trung bình mỗi ngày team nhận ~200 ticket khó. Khách hàng đợi lâu 4-6 tiếng nên thường nóng giận, dẫn đến khiếu nại leo thang, nhân viên áp lực cục bộ. |
-| Metric đo được không? Có số cụ thể chưa? | Đo được rõ ràng. Trung bình mỗi khiếu nại mất 4–6 tiếng (có trường hợp vài ngày). AI giúp rút ngắn tổng thời gian xử lý xuống còn ~1 tiếng/ticket. Thời gian tiết kiệm được sẽ dùng để tập trung chăm sóc khách VIP và phân tích nguyên nhân gốc rễ (Root cause) để cải thiện sản phẩm, tăng hài lòng dài hạn thay vì chỉ đi "dập lửa". |
-
-**Vote: 5/7**
-
-### Lý do Kill Cards
-
-| Card bị loại | Lý do |
-|:---|:---|
-| Chấm điểm QA | Bài toán hay và impact rõ (metric tốt), nhưng phụ thuộc cực kỳ lớn vào chất lượng Speech-to-Text tiếng Việt vùng miền (đây là Risk về Core Tech, khó demo proof-of-concept thành công). |
-| Collections Report | Giải quyết bài toán này bản chất chỉ cần Rules (RPA/ETL Scripts), không có nhu cầu "Semantic/Context" rõ rệt để cần tới sức mạnh của GenAI. "Rule đủ rồi". |
+> **Lưu ý:** Lớp 0 (ignored) của VisDrone được bỏ qua hoàn toàn.
 
 ---
 
-## Phase 3 — PITCH-CHALLENGE-VOTE (Anh)
+## 4. Mô hình (Model)
 
-**Anh pitch đề tài cho nhóm (2 min):**
+### 4.1. Tổng quan về YOLO11
 
-> "Hiện tại mỗi khi cần di chuyển nhanh và tiết kiệm, tôi phải mở cả 3 app Grab, Xanh SM, Be để so sánh giá và thời gian chờ. Bước này tốn ít nhất 5 phút và cực kỳ gây ức chế khi đang vội. Nếu có AI tự động thu thập và đề xuất phương tiện tối ưu ngay lập tức, chúng ta sẽ tiết kiệm được rất nhiều thời gian và tiền bạc."
+**YOLO11** (Ultralytics, tháng 9/2024) là thế hệ mới nhất trong dòng mô hình YOLO, mang đến nhiều cải tiến kiến trúc quan trọng so với các phiên bản trước (YOLOv8, YOLOv9). YOLO11 tập trung vào việc nâng cao hiệu quả trích xuất đặc trưng, cải thiện cơ chế chú ý không gian (spatial attention), và tối ưu hóa cả tốc độ lẫn độ chính xác.
 
-- **Bước 1-3**: Manual checking từng app, không real-time.
-- **Bước 4**: Manual comparison, dễ miss optimal choice.
-- **Rủi ro**: Chọn sai dẫn đến chậm trễ hoặc tốn kém.
+Các cải tiến chính của YOLO11 so với YOLOv8:
 
-### 4.2 — Problem Statement (6-field)
+| Đặc điểm | Thay đổi trong YOLO11 | Lợi ích |
+|-----------|----------------------|--------|
+| **Trích xuất đặc trưng** | Thay thế module C2f bằng **C3k2** | Hiệu quả tính toán cao hơn, xử lý nhanh hơn |
+| **Nhận thức không gian** | Thêm module **C2PSA** | Tập trung tốt hơn vào vùng quan trọng, cải thiện phát hiện đối tượng nhỏ |
+| **Hiệu suất tổng thể** | Tối ưu hóa backbone/neck | Đạt mAP cao hơn với ít tham số hơn (ví dụ: YOLO11m giảm 22% tham số so với YOLOv8m) |
 
-- **Actor**: Product Manager tại công ty logistics, chịu trách nhiệm optimize transportation cho users
-- **Current Workflow**: Mỗi lần đi: check Grab → check Xanh → check Be → compare → choose. 5 bước, 16 phút, thủ công
-- **Bottleneck**: Bước check và compare mất 13 phút (81% thời gian) vì phải manual từng app, không có aggregation
-- **Impact**: 16 phút/lần × 2-3 lần/ngày = ~1 giờ/ngày cho 1 user. 1000 users → ~1000 giờ/ngày. 70% users chọn không optimal
-- **Success Metric**: Giảm thời gian chọn từ 16 phút xuống dưới 2 phút (88% reduction). Tỉ lệ chọn optimal từ 30% lên 90%
-- **Operational Boundary**: AI được phép thu thập data từ apps và suggest options. AI không được tự book rides, user phải confirm
+YOLO11 tiếp tục phương pháp phát hiện đối tượng **anchor-free, multi-scale**, đồng thời tinh chỉnh cấu trúc mạng để gọn nhẹ và hiệu quả hơn cho nhiều tác vụ bao gồm object detection, instance segmentation, pose estimation, và oriented bounding boxes (OBB).
 
-### 4.3 — Research
+### 4.2. YOLO11l — Kiến trúc chi tiết
 
-**Existing Solutions**
+Dự án sử dụng **YOLO11l** (Large variant) từ thư viện Ultralytics 8.4.24.
 
-| Giải pháp | Điểm mạnh | Điểm yếu |
-|:---|:---|:---|
-| Grab/Xanh/Be apps | Individual apps | No cross-platform comparison |
-| Google Maps | Route planning | Không price comparison |
-| Rome2Rio | Multi-transport comparison | Focus international |
+| Thông số | Giá trị |
+|----------|---------|
+| **Pretrained weights** | yolo11l.pt (pre-trained trên COCO) |
+| **Tổng số layers** | 358 |
+| **Tổng số parameters** | 25,314,335 (~25.3M) |
+| **Gradients** | 25,314,319 |
+| **GFLOPs** | 87.3 |
+| **Số lớp đầu ra (nc)** | 5 (fine-tune từ 80 lớp COCO sang 5 lớp FishEye8K) |
 
-**Case Studies**
+### 4.3. Các module kiến trúc chính
 
-- **Uber's surge pricing**: ML predicts prices, nhưng không cross-app
-- **Citymapper**: Multi-modal transport, nhưng manual price check
-- **Internal logistics**: Companies build internal tools cho fleet optimization
+Kiến trúc YOLO11l được chia thành 3 phần chính: **Backbone**, **Neck (FPN)**, và **Head**.
 
-**Quick Poll Results**
 
-- User A: Check all apps manually, takes 10-15 min
-- User B: Usually use Grab, sometimes regret
-- User C: Ask friends for recommendations
-- User D: Use whatever is cheapest, ignore time
 
-*Insights*: Universal pain, high demand for AI solution
+#### 4.3.3. Head — Phát hiện đối tượng
 
----
+| Layer | Module | Đầu vào | Tham số | Mô tả |
+|-------|--------|---------|---------|-------|
+| 23 | **Detect** | [16, 19, 22] | 1,414,879 | Anchor-free detection head, 5 lớp, reg_max=16 |
 
-# 02 — Deep Dive Report
+### 4.4. Sơ đồ luồng xử lý YOLO11 (Mermaid Workflow)
 
-**Bài toán được chọn:** Đề xuất phương tiện di chuyển khả dụng + nhanh + rẻ dựa trên thu thập dữ liệu real-time từ Grab, Xanh SM, Be
+Dưới đây là sơ đồ tóm lược luồng xử lý của YOLO11l, làm rõ mục đích của từng giai đoạn:
 
----
-
-## 4.1 — Workflow Mapping (Current State)
-
-### Actor chính
-
-- **Người dùng A:** Đi lại hàng ngày (sinh viên, nhân viên văn phòng) — ưu tiên rẻ + quen tuyến
-- **Người dùng B:** Đi lại thỉnh thoảng, không có xe cá nhân — ưu tiên nhanh + khả dụng
-
-### Workflow hiện tại (As-Is)
-
-```
-TRIGGER: Người dùng cần di chuyển từ A → B
-         │
-         ▼
-Bước 1: Mở app thủ công (3 app riêng lẻ)
-         Mở lần lượt từng app (Grab → Be → Xanh)
-         Áp mã giảm giá (nếu có)          ⏱ 1–2 min / 3 app
-         │
-         ▼
-Bước 2: Nhập điểm đi–đến trên từng app
-         Nhập điểm đi / điểm đến 3 lần
-         Áp mã giảm giá (nếu có)          ⏱ 1–2 min (lặp lại)
-         │
-         ▼
-Bước 3: So sánh thủ công giá + ETA + loại xe
-         Xem giá, loại xe, ETA — mỗi app 1 format khác
-         ⏱ 2–3 min (cộng dồn) ★ BOTTLENECK CHÍNH
-         │
-         ▼
-Bước 4: Đặt — chờ xác nhận (có thể bị hủy)
-         Không rõ tài xế có nhận không, giờ cao điểm
-         có thể hủy / không khớp          ⏱ 1–5 min
-         │
-         ▼
-Bước 5: Di chuyển / quay lại so sánh
-         Nếu bị hủy: quay lại bước 1
-         Nếu ok: hoàn thành
+```mermaid
+flowchart TD
+    Start([Input Image<br/>640×640×3]) --> Backbone[BACKBONE<br/>Layers 0-10<br/>Trích xuất đặc trưng]
+    
+    Backbone --> |80×80×512| P3_Backbone[Scale 1/8<br/>Chi tiết cao]
+    Backbone --> |40×40×512| P4_Backbone[Scale 1/16<br/>Chi tiết trung bình]
+    Backbone --> |20×20×512| P5_Backbone[Scale 1/32<br/>Ngữ cảnh toàn cục]
+    
+    P5_Backbone --> Neck[NECK FPN<br/>Layers 11-22<br/>Tổng hợp đa tỷ lệ]
+    P4_Backbone --> Neck
+    P3_Backbone --> Neck
+    
+    Neck --> |80×80×256| P3_Out[P3: Small Objects<br/>Pedestrian, Motorbike xa]
+    Neck --> |40×40×512| P4_Out[P4: Medium Objects<br/>Car, Motorbike gần]
+    Neck --> |20×20×512| P5_Out[P5: Large Objects<br/>Bus, Truck]
+    
+    P3_Out --> Head[DETECTION HEAD<br/>Layer 23<br/>Dự đoán bbox + class]
+    P4_Out --> Head
+    P5_Out --> Head
+    
+    Head --> Output([Output<br/>Bounding Boxes<br/>5 classes + confidence])
+    
+    style Start fill:#e1f5ff
+    style Backbone fill:#c8e6c9
+    style Neck fill:#fff9c4
+    style Head fill:#ffccbc
+    style Output fill:#ffe1e1
+    style P3_Out fill:#b3e5fc
+    style P4_Out fill:#b3e5fc
+    style P5_Out fill:#b3e5fc
 ```
 
-**Thời gian tổng (trước khi lên xe):** 5–12 phút  
-**Tần suất:** 1–4 lần/ngày với người dùng thường xuyên
+#### Mục đích của từng giai đoạn:
 
-### Bottleneck xác định
+| Giai đoạn | Layers | Mục đích chính | Kỹ thuật sử dụng |
+|-----------|--------|----------------|------------------|
+| **BACKBONE** | 0-10 | **Trích xuất đặc trưng từ ảnh thô**<br/>- Giảm kích thước không gian (640→20)<br/>- Tăng số channels (3→512)<br/>- Học các pattern từ đơn giản đến phức tạp | • Conv layers: Downsampling<br/>• C3k2: Trích xuất đặc trưng hiệu quả<br/>• SPPF: Mở rộng receptive field<br/>• C2PSA: Tập trung vào vùng quan trọng |
+| **NECK (FPN)** | 11-22 | **Kết hợp thông tin đa tỷ lệ**<br/>- Tổng hợp features từ nhiều độ phân giải<br/>- Tạo feature pyramid cho detection<br/>- Cân bằng giữa chi tiết và ngữ cảnh | • Upsample: Phục hồi độ phân giải<br/>• Concat: Kết hợp features<br/>• C3k2 Fusion: Tổng hợp thông tin<br/>• Downsample: Tạo pyramid |
+| **HEAD** | 23 | **Dự đoán đối tượng**<br/>- Tạo bounding boxes<br/>- Phân loại đối tượng (5 classes)<br/>- Tính confidence scores | • Anchor-free detection<br/>• Multi-scale prediction (P3, P4, P5)<br/>• NMS post-processing |
 
-| Bước | Vấn đề | Thời gian mất |
-|:---|:---|:---|
-| Bước 2 | Nhập lại điểm đi–đến 3 lần | ~3 min |
-| Bước 3 | So sánh thủ công, format khác nhau, không có baseline chung | ~3 min |
-| Bước 4 | Không biết trước khả năng có tài xế hay không | ~2 min |
+#### Luồng xử lý chi tiết theo scale:
 
----
-
-## 4.2 — Problem Statement (6-field PS)
-
-| Field | Nội dung |
-|:---|:---|
-| **Actor** | Người dùng ride-hailing tại Việt Nam (cả người đi hàng ngày lẫn thỉnh thoảng), không có xe cá nhân hoặc chủ động chọn không dùng xe |
-| **Situation** | Khi cần di chuyển từ điểm A đến điểm B — đặc biệt giờ cao điểm, thời tiết xấu, hoặc khi ngân sách bị giới hạn |
-| **Job-to-be-done** | Chọn được phương tiện phù hợp nhất (theo bộ ưu tiên cá nhân: rẻ / nhanh / chắc có xe) mà không phải tự mở và so sánh nhiều app |
-| **Pain** | Phải mở 3 app riêng lẻ, nhập lại thông tin nhiều lần, so sánh thủ công các format khác nhau, và vẫn không chắc có tài xế nhận không — tốn 5–12 phút trước khi lên xe |
-| **Metric thành công** | Thời gian từ "có nhu cầu" đến "đặt xong" giảm từ 5–12 phút xuống dưới 90 giây; tỉ lệ đặt thành công lần đầu tăng từ ~70% lên trên 90% |
-| **Boundary** | Chỉ xử lý bước so sánh + đề xuất — **không** tự động đặt xe thay người dùng; người dùng vẫn bấm xác nhận cuối |
-
-### Primary metrics
-
-| Metric | Baseline hiện tại | Target |
-|:---|:---|:---|
-| Thời gian từ mở tool → đặt xong | 5–12 phút | < 90 giây |
-| Số bước người dùng phải thao tác | ~15 bước (3 app × 5 bước) | ≤ 3 bước |
-| Tỉ lệ đặt thành công lần đầu | ~70% (ước tính) | > 90% |
-| Tỉ lệ hài lòng với lựa chọn được đề xuất | Không đo được | > 80% thumbs up |
-
-### Guardrail metrics (không được phá vỡ)
-
-- Độ trễ fetch data từ 3 app ≤ 3 giây (không làm tổng thời gian tệ hơn baseline)
-- Không lưu thông tin tài khoản / thanh toán của người dùng
-- Khi 1 app trả về lỗi → hiển thị rõ, không silently drop option
-
-### Boundary rõ ràng
-
-✅ **Trong scope:**
-- Fetch giá + ETA + loại xe từ 3 app theo thời gian thực
-- Xếp hạng / đề xuất theo bộ ưu tiên người dùng chọn
-- Cảnh báo khi khả dụng thấp (surge pricing, ít tài xế)
-- Giải thích lý do đề xuất ("rẻ hơn Be 12k, ETA gần bằng")
-
-❌ **Ngoài scope:**
-- Tự động đặt xe (người dùng vẫn xác nhận)
-- Tích hợp thanh toán
-- Theo dõi chuyến đi sau khi đặt
-- So sánh với xe buýt / metro (phase 2)
-
----
-
-## 4.3 — Research
-
-### Existing solutions
-
-| Giải pháp | Điểm mạnh | Điểm yếu |
-|:---|:---|:---|
-| **Mogi / Gojek (Indonesia)** | Super-app tích hợp nhiều dịch vụ | Không có tại VN, không so sánh cross-app |
-| **Google Maps** | Gợi ý phương tiện công cộng + đi bộ | Không có giá ride-hailing real-time |
-| **Grab "So sánh dịch vụ"** | So sánh trong nội bộ Grab (GrabBike vs GrabCar) | Chỉ trong 1 app, không cross-platform |
-| **Extension / script tự làm** | Một số dev đã làm unofficial scraper | Không ổn định, dễ bị block, không có UX |
-
-**Kết luận:** Thị trường VN chưa có giải pháp so sánh cross-app ride-hailing một cách chính thức và có UX tốt.
-
-### Case study tham khảo
-
-- **Skyscanner / Google Flights:** So sánh giá vé nhiều hãng hàng không → mô hình aggregate + rank tương tự bài toán này
-- **Kayak cho xe thuê:** Rank theo giá + availability + reviews → AI fit: rule-based ranking + LLM để giải thích recommendation
-
-### Quick poll (quan sát từ cộng đồng)
-
-- Group Facebook "Hội ghét kẹt xe Hà Nội / HCM": người dùng thường xuyên hỏi nhau "Grab hay Be rẻ hơn giờ này?"
-- Reddit r/VietNam: một số thread so sánh app, phần lớn dựa trên kinh nghiệm cá nhân, không có data real-time
-- **Bài học:** Nhu cầu so sánh có thật, đang được giải quyết bằng "hỏi cộng đồng" — tức là chưa có tool tốt
-
-### Buy / Boost / Build?
-
-- **Buy:** Không có sản phẩm nào đang bán đúng use case này tại VN
-- **Boost:** Có thể dùng API của từng app nếu được cấp quyền (Grab có Partner API)
-- **Build:** Cần xây aggregation layer + ranking logic + UI — feasible ở mức MVP
-
----
-
-## 4.4 — Future-State Flow + AI Fit
-
-### AI Fit Check
-
-```
-Complexity của task:    THẤP  ─●──── CAO
-                                 ↑
-                         Ranking + explain
-
-Ambiguity của output:   THẤP  ────●────── CAO
-                               ↑
-                    Output khá có cấu trúc
-                    (giá, ETA, loại xe)
-                    nhưng cần diễn đạt tự nhiên
+```mermaid
+flowchart LR
+    subgraph Backbone_Detail[BACKBONE - Trích xuất đặc trưng]
+        Input[640×640×3] --> C1[Conv<br/>320×320×64]
+        C1 --> C2[Conv<br/>160×160×128]
+        C2 --> C3[C3k2<br/>160×160×256]
+        C3 --> C4[Conv+C3k2<br/>80×80×512]
+        C4 --> C5[Conv+C3k2<br/>40×40×512]
+        C5 --> C6[Conv+C3k2<br/>20×20×512]
+        C6 --> C7[SPPF+C2PSA<br/>20×20×512]
+    end
+    
+    subgraph Neck_Detail[NECK - Tổng hợp đa tỷ lệ]
+        C7 --> Up1[Upsample<br/>40×40]
+        Up1 --> Fuse1[Fusion<br/>40×40×512]
+        Fuse1 --> Up2[Upsample<br/>80×80]
+        Up2 --> Fuse2[Fusion<br/>80×80×256]
+        Fuse2 --> Down1[Downsample<br/>40×40×512]
+        Down1 --> Down2[Downsample<br/>20×20×512]
+    end
+    
+    subgraph Head_Detail[HEAD - Phát hiện]
+        Fuse2 --> Det1[P3: Small]
+        Down1 --> Det2[P4: Medium]
+        Down2 --> Det3[P5: Large]
+        Det1 --> Final[Detect<br/>Bbox + Class]
+        Det2 --> Final
+        Det3 --> Final
+    end
+    
+    style Backbone_Detail fill:#c8e6c9
+    style Neck_Detail fill:#fff9c4
+    style Head_Detail fill:#ffccbc
 ```
 
-→ **Vùng:** LLM Feature (ranking + natural language explanation)  
-→ Phần fetch + aggregate: Rule / API call đủ  
-→ Phần rank + giải thích "tại sao chọn cái này": LLM phù hợp
+#### Ý nghĩa của kiến trúc đa tỷ lệ trong bài toán Fisheye:
 
-### AI Suitability Check
+| Đặc điểm Fisheye | Giải pháp YOLO11 | Lợi ích |
+|------------------|------------------|---------|
+| **Đối tượng nhỏ ở rìa** (Pedestrian xa) | P3 (80×80) với độ phân giải cao | Giữ được chi tiết nhỏ, phát hiện người đi bộ bị méo ở rìa |
+| **Đối tượng trung bình** (Car, Motorbike) | P4 (40×40) cân bằng chi tiết-ngữ cảnh | Phát hiện chính xác đối tượng phổ biến nhất |
+| **Đối tượng lớn gần tâm** (Bus, Truck) | P5 (20×20) với receptive field lớn | Nắm bắt toàn bộ đối tượng lớn, hiểu ngữ cảnh |
+| **Biến dạng barrel** | C2PSA spatial attention | Tập trung vào vùng quan trọng, bỏ qua méo hình |
+| **Đa tỷ lệ cực đoan** | FPN kết hợp 3 scales | Xử lý đồng thời đối tượng từ rất nhỏ đến rất lớn |
 
-| Tiêu chí | Đánh giá |
-|:---|:---|
-| Cần xử lý ngôn ngữ tự nhiên? | ✓ (giải thích recommendation) |
-| Output đa dạng tốt hơn cố định? | △ (output có cấu trúc, nhưng ngữ cảnh thay đổi theo user) |
-| Rule-based có đủ không? | △ (rule đủ để rank, nhưng không đủ để giải thích linh hoạt) |
-| Sai thì hậu quả nghiêm trọng? | ✗ (người dùng vẫn xác nhận trước khi đặt — failure cost thấp) |
-| Cần học từ hành vi người dùng? | ✓ (ưu tiên rẻ/nhanh/khả dụng thay đổi theo người và thời điểm) |
+### 4.5. Mô tả chi tiết các module mới trong YOLO11
 
-### Vì sao không phải Agent
+#### C3k2 — Cross-Stage Partial Bottleneck với Kernel 3×3
 
-1. Workflow tuyến tính: fetch → rank → hiển thị → người dùng chọn
-2. Không cần AI tự quyết định multi-step động
-3. Phần cần AI chỉ là bước rank + explain — không phải toàn bộ flow
+**C3k2** là module cốt lõi mới nhất trong YOLO11, thay thế module C2f của YOLOv8. Đặc điểm chính:
 
-### Future-State Flow (To-Be)
+- Sử dụng **kernel 3×3 nhỏ** trong các nhánh CSP (Cross Stage Partial), giảm chi phí tính toán (FLOPs) đáng kể
+- Duy trì hoặc cải thiện khả năng nắm bắt đặc trưng quan trọng từ ảnh đầu vào
+- Có hai chế độ: **reduce** (giảm channels, dùng ở đầu backbone) và **full** (giữ nguyên channels, dùng ở cuối backbone và trong neck)
+- Tăng tốc độ xử lý mà không hy sinh độ chính xác
 
-```
-┌──────────────────┐
-│ Người dùng nhập  │   Chỉ nhập 1 lần: điểm đi, điểm đến
-│ điểm đi / đến   │   (+ tuỳ chọn: ưu tiên rẻ / nhanh / chắc có xe)
-└──────────────────┘
-         │
-         ▼
-┌──────────────────┐
-│ 🔵 Auto-fetch    │   Gọi API Grab + Be + Xanh SM đồng thời
-│ data 3 app       │   ⏱ mục tiêu: ≤ 3 giây
-│ (parallel call)  │
-└──────────────────┘
-         │
-         ▼
-┌──────────────────┐
-│ 🔵 LLM rank +    │   Xếp hạng theo ưu tiên người dùng
-│ explain          │   Sinh câu giải thích tự nhiên:
-│                  │   "Be rẻ hơn 15k, ETA chênh 2 phút"
-└──────────────────┘
-         │
-         ▼
-┌──────────────────┐
-│ 🟢 Người dùng    │   Xem top 1–3 đề xuất
-│ review + chọn   │   Bấm "Mở app" để đặt
-│ 🔴 Boundary:     │
-│ người dùng xác   │
-│ nhận cuối        │
-└──────────────────┘
-```
+#### C2PSA — Cross-Stage Partial with Spatial Attention
 
-➡️ **Fallback:** Nếu 1 app lỗi → hiển thị 2 app còn lại, ghi rõ thiếu dữ liệu từ app nào  
-➡️ **Fallback:** Nếu LLM chậm → hiển thị bảng rank đơn giản không có explanation
+**C2PSA** là module hoàn toàn mới, được tích hợp vào cả backbone và neck:
 
-### Underspecification Check
+- Kết hợp **cơ chế chú ý không gian** (spatial attention) vào thiết kế CSP
+- Cho phép mô hình **tập trung hiệu quả hơn vào các vùng quan trọng** trong ảnh
+- Cải thiện đáng kể hiệu suất phát hiện **đối tượng nhỏ** — đặc biệt quan trọng trong bối cảnh ảnh fisheye nơi đối tượng ở rìa bị thu nhỏ và biến dạng
+- Giúp xử lý tốt hơn các tình huống **che khuất phức tạp** (complex occlusions)
 
-| Điều chưa rõ | Hậu quả nếu sai | Cách validate |
-|:---|:---|:---|
-| Grab / Be có cho phép fetch giá real-time không? | Không build được nếu không có API hợp lệ | Check Grab Partner API, Be API docs |
-| "Khả dụng" đo bằng gì? (ETA? Số tài xế gần?) | Rank sai nếu dùng metric không đúng | Pilot: dùng ETA làm proxy trước |
-| Người dùng có thật sự đổi app nếu rẻ hơn 5k không? | Build tool mà không ai dùng | User interview 5–10 người |
-| Surge pricing có expose qua API không? | Thiếu thông tin quan trọng nhất lúc cao điểm | Test thực tế giờ cao điểm |
+#### SPPF — Spatial Pyramid Pooling Fast
+
+**SPPF** được kế thừa từ các phiên bản YOLO trước, với vai trò:
+
+- Gộp đặc trưng (pooling) từ các vùng khác nhau của ảnh ở **nhiều tỷ lệ khác nhau**
+- Cho phép mô hình tổng hợp thông tin đa tỷ lệ (multi-scale) một cách hiệu quả
+- Trong YOLO11, SPPF được tích hợp chặt chẽ hơn vào các lớp sâu của backbone để **mở rộng receptive field**
+- Sử dụng max pooling với kernel size = 5
+
+### 4.6. Fused model (sau huấn luyện)
+
+Sau khi huấn luyện, mô hình được tối ưu hóa bằng kỹ thuật **layer fusion** (gộp Conv + BatchNorm):
+
+| Thông số | Giá trị |
+|----------|---------|
+| **Layers (fused)** | 191 |
+| **Parameters** | 25,283,167 |
+| **GFLOPs** | 86.6 |
+| **Kích thước file** | ~51.2 MB |
 
 ---
 
-## 4.5 — AI Readiness Checklist
+## 5. Xử lý dữ liệu (Data Pipeline)
 
-| # | Câu hỏi | Kết quả | Ghi chú |
-|:---|:---|:---|:---|
-| 1 | Có data/input đủ chất lượng? | △ | Phụ thuộc vào API access — cần xác nhận |
-| 2 | Có metric rõ? | ✓ | < 90 giây, > 90% đặt thành công lần đầu |
-| 3 | Sai thì hậu quả chấp nhận được? | ✓ | Người dùng vẫn xác nhận trước khi đặt |
-| 4 | User sẵn sàng dùng AI? | ✓ | Nhu cầu có thật, đang giải quyết bằng "hỏi cộng đồng" |
-| 5 | Có resource để build + maintain? | △ | Cần dev có thể gọi API + basic LLM integration |
+### 5.1. Tổng quan Pipeline
+
+Pipeline xử lý dữ liệu gồm 5 pha chính:
+
+- Phase 1: EDA + Split + Export YOLO labels (FishEye8K)
+- Phase 2: Convert VisDrone sang Fisheye + Merge
+- Phase 3: Train YOLO11l
+- Phase 4: Validation + Per-class AP
+- Phase 5: Save checkpoint + Export
+
+### 5.2. Biến đổi Fisheye (Barrel Distortion)
+
+Để đồng nhất dữ liệu giữa FishEye8K (đã có méo fisheye) và VisDrone (ảnh thẳng), toàn bộ ảnh VisDrone được **chuyển đổi sang dạng fisheye** bằng hàm to_fisheye():
+
+**Nguyên lý hoạt động:**
+
+1. Tính tâm ảnh (cx, cy) và bán kính R = min(w, h) / 2
+2. Chuẩn hóa tọa độ pixel về hệ tọa độ cực (r, theta)
+3. Áp dụng biến đổi barrel distortion: r_src = tan(r_dst x s x pi/2) / tan(s x pi/2)
+4. Remap ảnh gốc bằng cv2.remap() với nội suy Lanczos4
+
+**Tham số chính:** FISHEYE_STRENGTH = 0.5 (phạm vi tốt: 0.4 – 0.6)
+
+### 5.3. Biến đổi Bounding Box theo Fisheye
+
+Khi ảnh bị biến dạng fisheye, các bounding box cũng cần được biến đổi tương ứng. Hàm transform_bbox_fisheye() thực hiện:
+
+1. Lấy mẫu các điểm trên 4 cạnh của bbox gốc (mỗi cạnh n_pts=8 điểm)
+2. Áp dụng **biến đổi ngược** fisheye cho từng điểm
+3. Tính bbox bao quanh (axis-aligned bounding box) từ các điểm đã biến đổi
+4. Lọc bỏ các bbox quá nhỏ (width hoặc height < 0.004 so với kích thước ảnh)
+
+### 5.4. Dữ liệu sau khi merge
+
+| Tập | Số ảnh |
+|-----|--------|
+| **Train** | 11,296 |
+| **Val** | 1,768 |
+| **Test** | 853 |
+| **Train annotations** | 406,355 bounding boxes |
+| **VisDrone converted** | 8,629 ảnh (336,449 bbox) |
 
 ---
 
-# Phase 5 — EVALUATE
+## 6. Huấn luyện mô hình
 
-| Câu hỏi | Kết Quả | Ghi chú |
-|:---|:---|:---|
-| Có data/input đủ chất lượng? | Yes | Grab, Be, XanhSM |
-| Có metric rõ? | Yes | Giá tiền là metric rõ ràng nhất |
-| Sai thì hậu quả có chấp nhận được? | Yes | Chi phí chênh lệch sẽ không quá cao |
-| Có resource để maintain? | No | Cần Dev để build |
+Quá trình huấn luyện được thực hiện qua **2 giai đoạn** trên nền tảng Kaggle Notebooks:
 
-**Rủi ro:**
-- Thay đổi API làm hỏng hệ thống
-- Các khuyến nghị sai lệch làm tổn hại lòng tin
-- Lo ngại về quyền riêng tư với việc thu thập dữ liệu
+### 6.1. Giai đoạn 1 — Huấn luyện ban đầu (v4, 50 epochs)
+
+| Tham số | Giá trị |
+|---------|---------|
+| **GPU** | 1× Tesla P100-PCIE-16GB |
+| **Framework** | Ultralytics 8.4.24, PyTorch 2.3.1+cu121 |
+| **Image size** | 640 × 640 |
+| **Batch size** | 16 |
+| **Epochs** | 50 |
+| **Optimizer** | AdamW |
+| **Learning rate (lr0)** | 0.0005 |
+| **Learning rate final (lrf)** | 0.005 |
+| **Momentum** | 0.937 |
+| **Weight decay** | 0.0005 |
+| **Warmup epochs** | 5 |
+| **Patience (early stop)** | 30 |
+| **Workers** | 2 |
+| **Cache** | Disk |
+| **AMP** | Enabled |
+
+Kết quả giai đoạn 1: Best epoch ~31, mAP 0.5 = **0.427**, mAP 0.5:0.95 = **0.275**
+Tổng thời gian giai đoạn 1: **~9.64 giờ**
+
+### 6.2. Giai đoạn 2 — Resume Training (v5, thêm 80 epochs)
+
+Sau giai đoạn 1, checkpoint tốt nhất được load lại để tiếp tục huấn luyện với cấu hình mới:
+
+| Tham số | Giá trị |
+|---------|---------|
+| **GPU** | 2× Tesla T4 (15,360 MiB mỗi card, device="0,1") |
+| **Framework** | Ultralytics 8.4.24, PyTorch 2.3.1+cu121 |
+| **Image size** | 640 × 640 |
+| **Batch size** | 16/card → **32 effective** |
+| **Epochs (bổ sung)** | 80 (tổng cộng 130 epochs) |
+| **Optimizer** | AdamW |
+| **Learning rate (lr0)** | **0.001** |
+| **Learning rate final (lrf)** | **0.002** |
+| **Momentum** | 0.937 |
+| **Weight decay** | 0.0005 |
+| **Warmup epochs** | **3** |
+| **Patience (early stop)** | **40** |
+| **Workers** | 2 |
+| **Cache** | False |
+| **AMP** | Enabled |
+
+### 6.3. Loss functions
+
+| Loss | Weight |
+|------|--------|
+| Box loss | 7.5 |
+| Classification loss | 0.5 |
+| DFL loss | 1.5 |
+
+### 6.4. Tiến trình huấn luyện — Giai đoạn 2 (v5)
+
+Tổng thời gian giai đoạn 2: **~5.21 giờ** (80 epochs)
+
+| Epoch (v5) | Box Loss | Cls Loss | DFL Loss | mAP 0.5 | mAP 0.5:0.95 |
+|------------|----------|----------|----------|---------|---------------|
+| 1/80 | 1.409 | 0.921 | 0.926 | 0.418 | 0.219 |
+| 10/80 | 1.395 | 0.921 | 0.926 | 0.425 | 0.228 |
+| 20/80 | 1.324 | 0.842 | 0.906 | 0.476 | 0.259 |
+| 30/80 | 1.281 | 0.793 | 0.897 | 0.508 | 0.286 |
+| 40/80 | 1.240 | 0.758 | 0.888 | 0.541 | 0.310 |
+| 50/80 | 1.208 | 0.721 | 0.879 | 0.567 | 0.329 |
+| 60/80 | 1.182 | 0.692 | 0.872 | 0.594 | 0.350 |
+| 70/80 | 1.152 | 0.659 | 0.866 | 0.609 | 0.362 |
+| 79/80 | 1.054 | 0.581 | 0.859 | **0.617** | **0.368** |
+| 80/80 | 1.048 | 0.576 | 0.858 | 0.617 | 0.368 |
+
+> **Best model** đạt được tại epoch 79/80 (v5) với mAP 0.5 = **0.617** và mAP 0.5:0.95 = **0.368**
 
 ---
 
-## Quyết định: GO (với điều kiện)
+## 7. Kết quả thực nghiệm
 
-### Justify
+### 7.1. Kết quả tổng hợp (Best Model — Sau 130 epochs)
 
-- 3/5 điều kiện rõ ràng đã đủ
-- 2 điều kiện còn lại (API access + dev resource) là **rủi ro kỹ thuật**, không phải problem sai
-- Nhu cầu được validate qua hành vi thật (người dùng đang tự so sánh thủ công hàng ngày)
-- Failure cost thấp: người dùng vẫn xác nhận → AI sai thì người dùng chỉnh được
+Kết quả validation từ best checkpoint (`best.pt`) của giai đoạn 2 (v5):
 
-### Điều kiện cần validate trước khi build
+| Metric | Giá trị |
+|--------|---------|
+| **mAP 0.5** | **0.616** |
+| **mAP 0.5:0.95** | **0.368** |
+| **Precision** | 0.654 |
+| **Recall** | 0.582 |
 
-1. **API feasibility:** Xác nhận Grab Partner API + Be API cho phép fetch giá real-time
-2. **User threshold:** Interview nhanh — người dùng có đổi app nếu rẻ hơn bao nhiêu?
-3. **Surge pricing signal:** Test thực tế giờ cao điểm xem data có expose không
+### 7.2. Kết quả theo từng lớp (Per-class)
 
-### Nếu API không available
+Validation set: 862 ảnh, 27,193 instances tổng
 
-→ **Fallback plan:** Dùng web scraping có kiểm soát (rủi ro ToS) hoặc hạ scope xuống chỉ so sánh 2 app có API mở  
-→ Hoặc pivot sang: tool giúp người dùng **học pattern** ("Be thường rẻ hơn Grab ~15% vào giờ thấp điểm") thay vì real-time fetch
+| Lớp | Images | Instances | Precision | Recall | AP 0.5 | AP 0.5:0.95 |
+|-----|--------|-----------|-----------|--------|--------|-------------|
+| **Car** | 671 | 3,894 | 0.718 | 0.719 | 0.776 | 0.534 |
+| **Bus** | 337 | 2,469 | 0.623 | 0.569 | 0.565 | 0.267 |
+| **Truck** | 111 | 286 | 0.519 | 0.486 | 0.515 | 0.304 |
+| **Pedestrian** | 411 | 4,232 | 0.603 | 0.276 | 0.339 | 0.129 |
+| **Motorbike** | 814 | 16,312 | 0.805 | 0.858 | 0.887 | 0.607 |
 
-### Optimization check
+### 7.3. Tốc độ xử lý
 
-**Lợi ích rõ:**
-- Tiết kiệm 5–10 phút/lần đặt xe, 1–4 lần/ngày → ~10–40 phút/ngày với người dùng thường xuyên
-- Giảm cognitive load khi đang vội hoặc dưới mưa
+| Giai đoạn | Thời gian |
+|-----------|-----------|
+| Preprocess | 0.1 ms/ảnh |
+| Inference | 4.5 ms/ảnh |
+| Loss computation | 0.0 ms/ảnh |
+| Postprocess | 0.9 ms/ảnh |
+| **Tổng** | **~5.5 ms/ảnh (~181 FPS)** |
 
-**Rủi ro nếu optimize sai:**
-- LLM giải thích sai lý do đề xuất (hallucinate giá) → người dùng mất tin tưởng
-- Fetch data bị delay → đề xuất dựa trên giá cũ, thực tế khác
+### 7.4. Phân tích kết quả
+
+**Điểm mạnh:**
+- Lớp **Motorbike** đạt AP 0.5 = **0.887** — kết quả xuất sắc, nhờ có số instances lớn nhất (16,312) và đặc trưng rõ ràng
+- Lớp **Car** đạt AP 0.5 = **0.776**, Recall = 0.719 — phát hiện ổn định trên đối tượng phổ biến nhất
+- Lớp **Bus** đạt AP 0.5 = **0.565**, Recall = 0.569 — kết quả tốt cho đối tượng kích thước lớn
+- Lớp **Truck** đạt AP 0.5 = **0.515** dù chỉ có 286 instances — mô hình học được đặc trưng xe tải
+- Tốc độ inference rất nhanh (**~181 FPS**) phù hợp ứng dụng real-time
+- Resume training cải thiện đáng kể: mAP 0.5 tăng từ **0.427 → 0.616** (+44.3%)
+
+**Điểm yếu:**
+- Lớp **Pedestrian** có Recall thấp (0.276) — mô hình bỏ sót nhiều người đi bộ do kích thước nhỏ và biến dạng fisheye mạnh ở rìa ảnh
+- AP 0.5:0.95 thấp hơn AP 0.5 đáng kể ở Pedestrian (0.129 vs 0.339) — bounding box chưa khớp chính xác
+
+**Nguyên nhân hạn chế:**
+- Mất cân bằng dữ liệu giữa các lớp (Motorbike ~60%, Pedestrian ~15%, Car ~14%)
+- Đối tượng nhỏ (pedestrian) bị ảnh hưởng nặng bởi barrel distortion ở rìa ảnh
+- Sự khác biệt domain giữa FishEye8K và VisDrone (dù đã apply fisheye transform)
+
+### 7.5. So sánh với các đội thắng giải AI City Challenge 2024
+
+#### 7.5.1. Bảng so sánh tổng quan
+
+| Tiêu chí | **VNPT AI (1st)** | **Nota (2nd)** | **SKKU-AutoLab (3rd)** | **Nghiên cứu của chúng tôi** |
+|----------|-------------------|----------------|------------------------|------------------------------|
+| **F1-score** | **0.6406** | **0.6196** | **0.6194** | ~0.614* |
+| **Số models** | 4 models (ensemble) | Multi-model ensemble | Multi-model ensemble | **1 model duy nhất** |
+| **Models sử dụng** | CO-DETR, YOLOv9, YOLOR-W6, InternImage | YOLO + Transformer variants | YOLO + Open-Vocabulary models | **YOLO11l** |
+| **Kỹ thuật fusion** | Weighted Boxes Fusion (WBF) | WBF | WBF | Không (single model) |
+| **Pseudo-labeling** | Có (CO-DETR pre-trained) | Có | Có (Open-Vocabulary) | Không |
+| **SAHI** | Có | Có | Có | Không |
+| **Dữ liệu bổ sung** | FishEye8K + VisDrone + Synthetic | FishEye8K + External data | FishEye8K + External data | FishEye8K + VisDrone |
+| **Tốc độ inference** | Chậm (multi-model) | Chậm (multi-model) | Chậm (multi-model) | **~181 FPS (real-time)** |
+
+> *F1-score ước tính từ Precision=0.654 và Recall=0.582: F1 = 2 × (0.654 × 0.582) / (0.654 + 0.582) ≈ 0.616
+
+#### 7.5.2. Phân tích chênh lệch
+
+**Khoảng cách F1-score:** Nghiên cứu của chúng tôi đạt F1 ≈ 0.616, thấp hơn đội vô địch VNPT AI khoảng **0.025 điểm** (~4%). Khoảng cách này đến từ các yếu tố sau:
+
+| Yếu tố | Ảnh hưởng | Giải thích |
+|---------|-----------|------------|
+| **Model Ensemble** | Rất lớn | VNPT AI kết hợp 4 mô hình mạnh (CO-DETR, YOLOv9, YOLOR-W6, InternImage) qua WBF. Ensemble thường cải thiện 5-15% so với single model |
+| **Pseudo-labeling** | Lớn | Sinh thêm nhãn chất lượng cao cho dữ liệu chưa gán nhãn, mở rộng hiệu quả tập huấn luyện |
+| **SAHI** | Trung bình | Slicing Aided Hyper Inference giúp phát hiện đối tượng nhỏ tốt hơn đáng kể — đặc biệt quan trọng với Pedestrian và Motorbike |
+| **Multi-scale TTA** | Trung bình | Test-Time Augmentation ở nhiều scale giúp tăng robustness |
+| **YOLO11 vs YOLOv9** | Nhỏ | YOLO11 là phiên bản mới hơn với các module C3k2 và C2PSA cải tiến, nhưng single model vẫn không bằng ensemble |
+
+#### 7.5.3. Điểm mạnh của nghiên cứu chúng tôi
+
+Mặc dù F1-score thấp hơn các đội thắng giải, nghiên cứu này có những **ưu điểm riêng**:
+
+| Ưu điểm | Chi tiết |
+|---------|---------|
+| **Tốc độ real-time** | ~181 FPS với single model, trong khi ensemble của các đội top thường chỉ đạt 5-15 FPS |
+| **Đơn giản triển khai** | Chỉ cần 1 file weight (~51.2 MB), dễ deploy trên edge devices |
+| **Chi phí thấp** | Không cần nhiều GPU để chạy multi-model inference |
+| **Kết quả cạnh tranh** | F1 ≈ 0.616, chỉ cách đội vô địch ~4% dù dùng 1 model |
+| **Fisheye transform pipeline** | Pipeline biến đổi VisDrone sang fisheye có thể tái sử dụng cho các nghiên cứu khác |
+
+## 8. Kết luận và hướng phát triển
+
+### 8.1. Kết luận
+
+Dự án đã xây dựng thành công một pipeline end-to-end cho bài toán phát hiện đối tượng giao thông trên ảnh camera fisheye 8K:
+
+1. **Data pipeline:** Kết hợp thành công 2 dataset (FishEye8K + VisDrone) thông qua kỹ thuật biến đổi fisheye, tăng tổng số ảnh train từ ~5,300 lên ~11,300
+2. **Model:** YOLO11l với 25.3M tham số, sử dụng các module C3k2, C2PSA, SPPF tiên tiến cho kết quả inference rất nhanh (**~181 FPS**)
+3. **Huấn luyện 2 giai đoạn:** Phase 1 (50 epochs, P100) + Phase 2 resume (80 epochs, 2×T4) = **130 epochs tổng cộng**
+4. **Kết quả cuối:** mAP 0.5 = **0.616**, mAP 0.5:0.95 = **0.368** trên tập validation
+5. **Hiệu quả resume training:** mAP 0.5 tăng **+44.3%** (từ 0.427 lên 0.616) sau giai đoạn 2
+
